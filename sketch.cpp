@@ -10,7 +10,7 @@
 
 //--- bot cred and master user uid ---
 #define BOT_TOKEN "TELEGRAM_BOT_TOKEN"
-#define AUTHORIZED_UID "TELEGRAM_USER_ID"
+#define MASTER_UID "TELEGRAM_USER_ID"
 
 //--- hosts save file ---
 #define HOSTS_FILE "/hosts.json"
@@ -88,10 +88,10 @@ void loop()
 
 void handleMessage(telegramMessage &message)
 {
-    if (message.from_id != AUTHORIZED_UID)
+    if (message.from_id != MASTER_UID) // only for me ;)
     {
         return;
-    } // only for me ;)
+    }
 
     if (message.text == "/start")
     {
