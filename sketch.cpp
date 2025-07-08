@@ -47,7 +47,7 @@ void setup()
     // initialize LittleFS]
     if (!LittleFS.begin(true))
     {
-        Serial.println(F("Falha em dar mount no LittleFS."));
+        Serial.println(F("Failed on mounting LittleFS."));
         return;
     }
 
@@ -244,11 +244,11 @@ void removeHostCommand(telegramMessage &message)
                 hosts[j] = hosts[j + 1];
             }
             hostCount--;
-            bot.sendMessage(message.chat_id, F("Host '") + nameToRemove + F("' removed."));
+            bot.sendMessage(message.chat_id, F("Host '") + nameToRemove + F("' removido."));
             return;
         }
     }
-    bot.sendMessage(message.chat_id, F("Host not found."));
+    bot.sendMessage(message.chat_id, F("Host não encontrado."));
 }
 
 void listHostsCommand(String chat_id)
@@ -336,7 +336,7 @@ void loadHosts() {
   // lets read a file!
   File file = LittleFS.open(HOSTS_FILE, "r");
   if (!file) {
-    Serial.println(F("Arquivo não encontrado, usando configuração padrão (vazia)."));
+    Serial.println(F("File not found, using default (empty) configuration."));
     return;
   }
 
@@ -344,7 +344,7 @@ void loadHosts() {
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, file);
   if (error) {
-    Serial.println(F("Falha em ler o arquivo JSON, usando configuração padrão (vazia)."));
+    Serial.println(F("Failed to parse JSON file, using default (empty) configuration."));
     return;
   }
 
@@ -362,6 +362,6 @@ void loadHosts() {
 
   // print the loaded hosts for debugging
   Serial.print(hostCount);
-  Serial.println(F(" hosts carregados do backup."));
+  Serial.println(F(" hosts loaded from backup."));
   file.close();
 }
