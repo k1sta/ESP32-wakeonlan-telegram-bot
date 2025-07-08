@@ -48,6 +48,15 @@ void setup()
     }
     Serial.println(F("WiFi connected"));
     wol.calculateBroadcastAddress(WiFi.localIP(), WiFi.subnetMask());
+
+    // set bot commands
+    bot.setMyCommands({
+        {"/start", "Inicia o bot"},
+        {"/list", "Lista todos os servidores registrados"},
+        {"/add", "Adiciona um novo servidor"},
+        {"/remove", "Remove um servidor"},
+        {"/wake", "Acorda um servidor"}
+    });
 }
 
 void loop()
