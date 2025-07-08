@@ -6,14 +6,21 @@
 #include <ESP32Ping.h>
 #include <ESPmDNS.h>
 #include <lwip/etharp.h>
-
-//--- network creds ---
-const char *ssid = "WIFI_SSID";
-const char *password = "WIFI_PASSWORD";
+#include <LittleFS.h>
 
 //--- bot cred and master user uid ---
 #define BOT_TOKEN "TELEGRAM_BOT_TOKEN"
 #define AUTHORIZED_UID "TELEGRAM_USER_ID"
+
+//--- hosts save file ---
+#define HOSTS_FILE "/hosts.json"
+
+// --- max hosts ---
+#define MAX_HOSTS 10
+
+//--- network creds ---
+const char *ssid = "WIFI_SSID";
+const char *password = "WIFI_PASSWORD";
 
 //--- global objects ---
 WiFiClientSecure client;
@@ -29,14 +36,21 @@ struct Host
     String mac;
 };
 
-// --- global variables and max hosts ---
-#define MAX_HOSTS 10
+// --- global host variables ---
 Host hosts[MAX_HOSTS];
 int hostCount = 0;
 
 void setup()
 {
     Serial.begin(115200);
+
+    // initialize LittleFS]
+    if (!LittleFS.begin(true))
+    {
+        Serial.println(F("Falha em dar mount no LittleFS."));
+        return;
+    }
+
 
     // connecting to wifi and setting up WOL
     WiFi.begin(ssid, password);
@@ -57,6 +71,9 @@ void setup()
         {"/remove", "Remove um servidor"},
         {"/wake", "Acorda um servidor"}
     });
+
+    // load hosts from file
+    loadHosts(); 
 }
 
 void loop()
@@ -283,4 +300,68 @@ bool addHost(String name, String ip, String mac)
     hosts[hostCount].mac = mac;
     hostCount++;
     return true;
+}
+
+void saveHosts() {
+  // create a JSON document
+  JsonDocument doc;
+  JsonArray array = doc.to<JsonArray>();
+
+  // add each host to the JSON array
+  for (int i = 0; i < hostCount; i++) {
+    JsonObject obj = array.add<JsonObject>();
+    obj["name"] = hosts[i].name;
+    obj["ip"] = hosts[i].ip;
+    obj["mac"] = hosts[i].mac;
+  }
+
+  // lets write it down!
+  File file = LittleFS.open(HOSTS_FILE, "w");
+  if (!file) {
+    Serial.println(F("Failed to open file for writing"));
+    return;
+  }
+
+  // serialize the JSON document to the file
+  if (serializeJson(doc, file) == 0) {
+    Serial.println(F("Failed to write to file"));
+  } else {
+    Serial.println(F("Hosts saved to LittleFS."));
+  }
+  
+  file.close();
+}
+
+void loadHosts() {
+  // lets read a file!
+  File file = LittleFS.open(HOSTS_FILE, "r");
+  if (!file) {
+    Serial.println(F("Arquivo não encontrado, usando configuração padrão (vazia)."));
+    return;
+  }
+
+  // deserialize the JSON document
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, file);
+  if (error) {
+    Serial.println(F("Falha em ler o arquivo JSON, usando configuração padrão (vazia)."));
+    return;
+  }
+
+  // create the hosts array from the JSON document
+  JsonArray array = doc.as<JsonArray>();
+  hostCount = 0; // reset host count (just in case)
+  for (JsonObject obj : array) {
+    if (hostCount < MAX_HOSTS) {
+      hosts[hostCount].name = obj["name"].as<String>();
+      hosts[hostCount].ip = obj["ip"].as<String>();
+      hosts[hostCount].mac = obj["mac"].as<String>();
+      hostCount++;
+    }
+  }
+
+  // print the loaded hosts for debugging
+  Serial.print(hostCount);
+  Serial.println(F(" hosts carregados do backup."));
+  file.close();
 }
