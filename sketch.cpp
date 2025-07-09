@@ -1,6 +1,5 @@
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <UniversalTelegramBot.h>
+#include <CTBot.h>
 #include <ArduinoJson.h>
 #include <WakeOnLan.h>
 #include <ESP32Ping.h>
@@ -23,8 +22,7 @@ const char *ssid = "WIFI_SSID";
 const char *password = "WIFI_PASSWORD";
 
 //--- global objects ---
-WiFiClientSecure client;
-UniversalTelegramBot bot(BOT_TOKEN, client);
+CTBot bot;
 WiFiUDP udp;
 WakeOnLan wol(udp);
 
@@ -51,26 +49,16 @@ void setup()
         return;
     }
 
-
     // connecting to wifi and setting up WOL
-    WiFi.begin(ssid, password);
-    client.setCACert(TELEGRAM_CERTIFICATE_ROOT); // add root certificate for telegram
-    while (WiFi.status() != WL_CONNECTED)
-    {
-        delay(1000);
-        Serial.println(F("Connecting to WiFi..."));
+    if (!bot.wifiConnect(ssid, password)) {
+        Serial.println(F("WiFi connection failed!"));
+        return;
     }
-    Serial.println(F("WiFi connected"));
+    Serial.println(F("WiFi connected via CTBot"));
     wol.calculateBroadcastAddress(WiFi.localIP(), WiFi.subnetMask());
 
-    // set bot commands
-    bot.setMyCommands({
-        {"/start", "Inicia o bot"},
-        {"/list", "Lista todos os servidores registrados"},
-        {"/add", "Adiciona um novo servidor"},
-        {"/remove", "Remove um servidor"},
-        {"/wake", "Acorda um servidor"}
-    });
+    // CTBot setup
+    bot.setTelegramToken(BOT_TOKEN);
 
     // load hosts from file
     loadHosts(); 
@@ -78,49 +66,48 @@ void setup()
 
 void loop()
 {
-    int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
-
-    for (int i = 0; i < numNewMessages; i++)
-    {
-        handleMessage(bot.messages[i]);
+    TBMessage msg;
+    if (bot.getNewMessage(msg)) {
+        handleMessage(msg);
     }
 }
 
-void handleMessage(telegramMessage &message)
-{
-    if (message.from_id != MASTER_UID) // only for me ;)
-    {
-        return;
-    }
 
-    if (message.text == "/start")
+void handleMessage(TBMessage &message)
+{
+    // Security: use String for user id comparison
+    if (String(message.sender.id) != String(MASTER_UID)) // only for me ;)
+        return;
+
+    String text = message.text;
+    if (text == "/start")
     {
         String welcome = F("Bem vindo ao seu HomeLab!\n\n");
         welcome += F("/list - Lista todos os servidores registrados\n");
         welcome += F("/add <nome> <ip> [mac] - Adiciona um novo servidor\n");
         welcome += F("/remove <nome> - Remove um servidor\n");
         welcome += F("/wake <nome> - Acorda um servidor\n");
-        bot.sendMessage(message.chat_id, welcome, "Markdown");
+        bot.sendMessage(message.sender.id, welcome);
     }
-    else if (message.text.startsWith(F("/add ")))
+    else if (text.startsWith(F("/add ")))
     {
         addHostCommand(message);
     }
-    else if (message.text.startsWith(F("/remove ")))
+    else if (text.startsWith(F("/remove ")))
     {
         removeHostCommand(message);
     }
-    else if (message.text == F("/list"))
+    else if (text == F("/list"))
     {
-        listHostsCommand(message.chat_id);
+        listHostsCommand(message);
     }
-    else if (message.text.startsWith(F("/wake ")))
+    else if (text.startsWith(F("/wake ")))
     {
         wakeHostCommand(message);
     }
 }
 
-void addHostCommand(telegramMessage &message)
+void addHostCommand(TBMessage &message)
 {
     String text = message.text;
     text.replace(F("/add "), "");
@@ -152,84 +139,59 @@ void addHostCommand(telegramMessage &message)
             }
             if (macStr.length() == 0)
             {
-                bot.sendMessage(message.chat_id, F("Endereço MAC não fornecido e não pôde ser encontrado na LAN. Por favor, especifique o MAC."));
+                bot.sendMessage(message.sender.id, F("Endereço MAC não fornecido e não pôde ser encontrado na LAN. Por favor, especifique o MAC."));
                 free(str);
                 return;
             }
         }
-        else
-        {
-            macStr = String(mac);
-        }
-
-        // check if the IP is valid
-        ip4_addr_t ip_addr;
-        if (!ip4addr_aton(ip, &ip_addr))
-        {
-            bot.sendMessage(message.chat_id, F("Endereço IP inválido."));
-            free(str);
-            return;
-        }
-
-        // check if the MAC is valid
-        if (!macStr.matches("([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}"))
-        {
-            bot.sendMessage(message.chat_id, F("Endereço MAC inválido."));
-            free(str);
-            return;
-        }
-
-        // check if the hostname/ip/mac already exists
-        String nameStr = String(name);
-        for (int i = 0; i < hostCount; i++)
-        {
-            if (hosts[i].name.equalsIgnoreCase(nameStr))
-            {
-                bot.sendMessage(message.chat_id, F("Host com esse nome já existe."));
-                free(str);
-                return;
-            }
-
-            if (hosts[i].ip.equalsIgnoreCase(ip))
-            {
-                bot.sendMessage(message.chat_id, F("Host com esse IP já existe."));
-                free(str);
-                return;
-            }
-
-            if (hosts[i].mac.equalsIgnoreCase(macStr))
-            {
-                bot.sendMessage(message.chat_id, F("Host com esse MAC já existe."));
-                free(str);
-                return;
-            }
-        }
-
-        // add the host
-        if (addHost(name, ip, macStr))
-        {
-            bot.sendMessage(message.chat_id, F("Host adicionado com sucesso. MAC: ") + macStr);
-        }
-        else
-        {
-            bot.sendMessage(message.chat_id, F("Não foi possível adicionar o host. A lista está cheia."));
-        }
-    }
-    else
-    {
-        bot.sendMessage(message.chat_id, F("Formato inválido. Use: /add <nome> <ip> [mac]"));
+    } else {
+        macStr = mac;
     }
 
-    // cleanup the mess
-    free(str);
+    // check if the IP is valid
+    ip4_addr_t ip_addr;
+    if (!ip4addr_aton(ip.c_str(), &ip_addr)) {
+        bot.sendMessage(message.sender.id, F("Endereço IP inválido."));
+        return;
+    }
+
+    // check if the MAC is valid
+    if (!macStr.matches("([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}")) {
+        bot.sendMessage(message.sender.id, F("Endereço MAC inválido."));
+        return;
+    }
+
+    // check if the hostname/ip/mac already exists
+    int exists = findHost(name, ip, macStr);
+    if (exists == 1) {
+        bot.sendMessage(message.sender.id, F("Host com esse nome já existe."));
+        return;
+    } else if (exists == 2) {
+        bot.sendMessage(message.sender.id, F("Host com esse IP já existe."));
+        return;
+    } else if (exists == 3) {
+        bot.sendMessage(message.sender.id, F("Host com esse MAC já existe."));
+        return;
+    }
+
+    // add the host
+    if (addHost(name, ip, macStr)) {
+        bot.sendMessage(message.sender.id, F("Host adicionado com sucesso."));
+    } else {
+        bot.sendMessage(message.sender.id, F("Não foi possível adicionar o host. A lista está cheia."));
+    }
 
     // serial debug
-    Serial.println(F("Request to add host: ") + String(name) + F(", IP: ") + String(ip) + F(", MAC: ") + macStr);
+    Serial.println(F("Request to add host: ") + name + F(", IP: ") + ip + F(", MAC: ") + macStr);
     Serial.print(F("Total hosts: "));
     Serial.println(hostCount);
+
+    // save the hosts to file
+    saveHosts();
+    Serial.println(F("Hosts saved to LittleFS."));
 }
 
-void removeHostCommand(telegramMessage &message)
+void removeHostCommand(TBMessage &message)
 {
     String nameToRemove = message.text;
     nameToRemove.replace(F("/remove "), "");
@@ -244,23 +206,32 @@ void removeHostCommand(telegramMessage &message)
                 hosts[j] = hosts[j + 1];
             }
             hostCount--;
-            bot.sendMessage(message.chat_id, F("Host '") + nameToRemove + F("' removido."));
+            bot.sendMessage(message.sender.id, F("Host '") + nameToRemove + F("' removido."));
+            
+            // save the hosts to file
+            saveHosts();
+            Serial.println(F("Hosts saved to LittleFS."));
+
             return;
         }
     }
-    bot.sendMessage(message.chat_id, F("Host não encontrado."));
+    bot.sendMessage(message.sender.id, F("Host não encontrado."));
 }
 
-void listHostsCommand(String chat_id)
-{   
+void listHostsCommand(TBMessage &message)
+{ 
     // empty list check
     if (hostCount == 0)
     {
-        bot.sendMessage(chat_id, F("Nenhum host registrado."));
+        bot.sendMessage(message.sender.id, F("Nenhum host registrado."));
         return;
     }
 
-    // list all hosts
+    // prompt loading message
+    String loadingMsg = F("Carregando status dos servidores, aguarde...");
+    int loadingMsgId = bot.sendMessage(message.sender.id, loadingMsg);
+
+
     String list = F("*Servidores registrados:*\n");
     for (int i = 0; i < hostCount; i++)
     {   
@@ -269,10 +240,13 @@ void listHostsCommand(String chat_id)
         String status = (isUp) ? F("✅") : F("❌");
         list += hosts[i].name + F(" (") + hosts[i].ip + F(") - ") + status + F("\n");
     }
-    bot.sendMessage(chat_id, list, "Markdown");
+    // if the edit fails, send a new message
+    if (!(bot.editMessageText(message.sender.id, loadingMsgId, list, "Markdown"))) {
+        bot.sendMessage(message.sender.id, list, "Markdown");
+    }
 }
 
-void wakeHostCommand(telegramMessage &message)
+void wakeHostCommand(TBMessage &message)
 {
     String nameToWake = message.text;
     nameToWake.replace(F("/wake "), "");
@@ -282,11 +256,11 @@ void wakeHostCommand(telegramMessage &message)
         if (hosts[i].name == nameToWake)
         {
             wol.sendMagicPacket(hosts[i].mac.c_str());
-            bot.sendMessage(message.chat_id, F("Pacote WOL enviado para ") + hosts[i].name);
+            bot.sendMessage(message.sender.id, F("Pacote WOL enviado para ") + hosts[i].name);
             return;
         }
     }
-    bot.sendMessage(message.chat_id, F("Host não encontrado."));
+    bot.sendMessage(message.sender.id, F("Host não encontrado."));
 }
 
 bool addHost(String name, String ip, String mac)
