@@ -2,10 +2,24 @@
 #include <CTBot.h>
 #include <ArduinoJson.h>
 #include <WakeOnLan.h>
-#include <ESP32Ping.h>
+#include <ESPping.h>
 #include <ESPmDNS.h>
 #include <lwip/etharp.h>
 #include <LittleFS.h>
+
+// --- function prototypes ---
+void setup();
+void loop();
+void handleMessage(TBMessage &message);
+void addHostCommand(TBMessage &message);
+int findHost(String name, String ip, String mac);
+void removeHostCommand(TBMessage &message);
+void listHostsCommand(TBMessage &message);
+void wakeHostCommand(TBMessage &message);
+bool addHost(String name, String ip, String mac);
+void saveHosts();
+void loadHosts();
+String resolveMacAddress(IPAddress targetIp);
 
 //--- bot cred and master user uid ---
 #define BOT_TOKEN "TELEGRAM_BOT_TOKEN"
@@ -75,7 +89,7 @@ void loop()
 
 void handleMessage(TBMessage &message)
 {
-    // Security: use String for user id comparison
+    // CTBot: message.sender.id is int64_t, MASTER_UID should be int64_t or string convertible
     if (String(message.sender.id) != String(MASTER_UID)) // only for me ;)
         return;
 
@@ -112,57 +126,60 @@ void addHostCommand(TBMessage &message)
     String text = message.text;
     text.replace(F("/add "), "");
 
-    char *str = strdup(text.c_str());
-    char *name = strtok(str, " ");
-    char *ip = strtok(NULL, " ");
-    char *mac = strtok(NULL, " ");
+    // Split the input string into name, ip, and optional mac
+    // Using simple String functions for robustness
+    int firstSpace = text.indexOf(' ');
+    if (firstSpace == -1) {
+        bot.sendMessage(message.sender.id, F("Parâmetros insuficientes. Use /add <nome> <ip> [mac]"));
+        return;
+    }
+    String name = text.substring(0, firstSpace);
+    String remaining = text.substring(firstSpace + 1);
 
-    if (name && ip)
-    {
-        String macStr;
-        // se mac nao inserido (geralmente o caso)
-        if (!mac)
-        {
-            ip4_addr_t ip_addr;
-            if (ip4addr_aton(ip, &ip_addr))
-            {
-                struct eth_addr *eth_ret;
-                struct netif *netif_ret;
-                if (etharp_find_addr(NULL, &ip_addr, &eth_ret, &netif_ret) >= 0 && eth_ret)
-                {
-                    char macBuf[18];
-                    sprintf(macBuf, "%02X:%02X:%02X:%02X:%02X:%02X",
-                            eth_ret->addr[0], eth_ret->addr[1], eth_ret->addr[2],
-                            eth_ret->addr[3], eth_ret->addr[4], eth_ret->addr[5]);
-                    macStr = String(macBuf);
-                }
-            }
-            if (macStr.length() == 0)
-            {
-                bot.sendMessage(message.sender.id, F("Endereço MAC não fornecido e não pôde ser encontrado na LAN. Por favor, especifique o MAC."));
-                free(str);
-                return;
-            }
-        }
+    int secondSpace = remaining.indexOf(' ');
+    String ipStr;
+    String macStr = ""; // Default to empty
+
+    if (secondSpace == -1) {
+        // Only name and IP provided
+        ipStr = remaining;
     } else {
-        macStr = mac;
+        // Name, IP, and MAC provided
+        ipStr = remaining.substring(0, secondSpace);
+        macStr = remaining.substring(secondSpace + 1);
     }
 
-    // check if the IP is valid
-    ip4_addr_t ip_addr;
-    if (!ip4addr_aton(ip.c_str(), &ip_addr)) {
+    // Check if the IP is valid
+    IPAddress ip_addr;
+    if (!ip_addr.fromString(ipStr)) {
         bot.sendMessage(message.sender.id, F("Endereço IP inválido."));
         return;
     }
 
-    // check if the MAC is valid
-    if (!macStr.matches("([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}")) {
-        bot.sendMessage(message.sender.id, F("Endereço MAC inválido."));
-        return;
+    // If MAC is not provided, try to resolve it
+    if (macStr.length() == 0) {
+        bot.sendMessage(message.sender.id, F("Tentando resolver endereço MAC para ") + ipStr + F("... Isso pode levar alguns segundos."));
+        // This is the blocking call for ARP resolution.
+        // In a real-world scenario with a more complex bot,
+        // you might want to offload this to a separate task
+        // or provide immediate feedback and update later.
+        macStr = resolveMacAddress(ip_addr);
+        if (macStr.length() == 0) {
+            bot.sendMessage(message.sender.id, F("Não foi possível resolver o endereço MAC para ") + ipStr + F(". Por favor, forneça-o manualmente no formato AA:BB:CC:DD:EE:FF."));
+            return;
+        } else {
+            bot.sendMessage(message.sender.id, F("Endereço MAC resolvido: ") + macStr);
+        }
+    } else {
+        // If MAC is provided, validate it
+        if (!macStr.matches("([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}")) {
+            bot.sendMessage(message.sender.id, F("Endereço MAC inválido. Formato esperado: AA:BB:CC:DD:EE:FF"));
+            return;
+        }
     }
 
     // check if the hostname/ip/mac already exists
-    int exists = findHost(name, ip, macStr);
+    int exists = findHost(name, ipStr, macStr);
     if (exists == 1) {
         bot.sendMessage(message.sender.id, F("Host com esse nome já existe."));
         return;
@@ -175,20 +192,30 @@ void addHostCommand(TBMessage &message)
     }
 
     // add the host
-    if (addHost(name, ip, macStr)) {
+    if (addHost(name, ipStr, macStr)) {
         bot.sendMessage(message.sender.id, F("Host adicionado com sucesso."));
     } else {
         bot.sendMessage(message.sender.id, F("Não foi possível adicionar o host. A lista está cheia."));
     }
 
     // serial debug
-    Serial.println(F("Request to add host: ") + name + F(", IP: ") + ip + F(", MAC: ") + macStr);
+    Serial.println(F("Request to add host: ") + name + F(", IP: ") + ipStr + F(", MAC: ") + macStr);
     Serial.print(F("Total hosts: "));
     Serial.println(hostCount);
 
     // save the hosts to file
     saveHosts();
     Serial.println(F("Hosts saved to LittleFS."));
+}
+
+// Find host by name, ip, or mac. Returns 1 if name exists, 2 if ip exists, 3 if mac exists, 0 if not found
+int findHost(String name, String ip, String mac) {
+    for (int i = 0; i < hostCount; i++) {
+        if (hosts[i].name.equalsIgnoreCase(name)) return 1;
+        if (hosts[i].ip == ip) return 2;
+        if (hosts[i].mac.equalsIgnoreCase(mac)) return 3;
+    }
+    return 0;
 }
 
 void removeHostCommand(TBMessage &message)
@@ -338,4 +365,46 @@ void loadHosts() {
   Serial.print(hostCount);
   Serial.println(F(" hosts loaded from backup."));
   file.close();
+}
+
+String resolveMacAddress(IPAddress targetIp) {
+    struct eth_addr *eth_ret = nullptr;
+    ip4_addr_t ip_addr_lwip;
+    ip_addr_lwip.addr = targetIp; // Convert IPAddress to lwIP ip4_addr_t
+
+    // Try to find in ARP cache first (might be there from previous communication)
+    if (etharp_find_addr(netif_list, (const ip4_addr_t *)&ip_addr_lwip, (struct eth_addr **)&eth_ret, NULL) >= 0 && eth_ret) {
+        char macBuf[18];
+        sprintf(macBuf, "%02X:%02X:%02X:%02X:%02X:%02X",
+                eth_ret->addr[0], eth_ret->addr[1], eth_ret->addr[2],
+                eth_ret->addr[3], eth_ret->addr[4], eth_ret->addr[5]);
+        return String(macBuf);
+    }
+
+    // If not in cache, send an ARP request
+    Serial.println(F("MAC not in cache, sending ARP request..."));
+    // Ensure the netif is valid. For WiFi STA, it's usually netif_list
+    err_t err = etharp_request(netif_list, &ip_addr_lwip); 
+    if (err != ERR_OK) {
+        Serial.printf("Failed to send ARP request, error: %d\n", err);
+        return "";
+    }
+
+    // Give it some time for the ARP reply to come back and update the cache
+    // This is a blocking delay, which is okay for this specific operation
+    // where we need the MAC immediately for WOL.
+    for (int i = 0; i < 5; i++) { // Try up to 5 times with a delay
+        delay(500); // Wait 500ms
+        // Try to find in ARP cache again after delay
+        if (etharp_find_addr(netif_list, (const ip4_addr_t *)&ip_addr_lwip, (struct eth_addr **)&eth_ret, NULL) >= 0 && eth_ret) {
+            char macBuf[18];
+            sprintf(macBuf, "%02X:%02X:%02X:%02X:%02X:%02X",
+                    eth_ret->addr[0], eth_ret->addr[1], eth_ret->addr[2],
+                    eth_ret->addr[3], eth_ret->addr[4], eth_ret->addr[5]);
+            return String(macBuf);
+        }
+    }
+    
+    Serial.println(F("Failed to resolve MAC address after ARP request."));
+    return ""; // Return empty string if not found
 }
